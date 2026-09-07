@@ -18,6 +18,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent / "configs" / "default.yaml"
 class SegToCutConfig:
     image_extensions: tuple[str, ...] = (".jpg", ".jpeg")
     mask_extension: str = ".png"
+    border_width_px: int = 3
 
 
 def _extension(value: Any, *, field: str) -> str:
@@ -35,6 +36,16 @@ def _extension(value: Any, *, field: str) -> str:
             field=field,
         )
     return extension
+
+
+def _positive_int(value: Any, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise SegToCutConfigError(
+            ERROR_CONFIG_INVALID,
+            f"{field} must be a positive integer, got {value!r}",
+            field=field,
+        )
+    return value
 
 
 def parse_config(data: Mapping[str, Any]) -> SegToCutConfig:
@@ -67,9 +78,13 @@ def parse_config(data: Mapping[str, Any]) -> SegToCutConfig:
         )
 
     mask_extension = _extension(data.get("mask_extension", ".png"), field="mask_extension")
+    border_width_px = _positive_int(
+        data.get("border_width_px", 3), field="border_width_px"
+    )
     return SegToCutConfig(
         image_extensions=image_extensions,
         mask_extension=mask_extension,
+        border_width_px=border_width_px,
     )
 
 

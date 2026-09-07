@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import numpy as np
+from numpy.typing import NDArray
 
 
 @dataclass(frozen=True)
@@ -60,3 +62,17 @@ class BatchValidationResult:
     def detection_count(self) -> int:
         return sum(len(image.detections) for image in self.images)
 
+
+@dataclass(frozen=True)
+class CleanupResult:
+    """Cleaned local mask and diagnostics for one detection."""
+
+    mask: NDArray[np.uint8]
+    removed_components: int
+    remaining_components: int
+    removed_pixels: int
+    skip_reason: str | None = None
+
+    @property
+    def skipped(self) -> bool:
+        return self.skip_reason is not None

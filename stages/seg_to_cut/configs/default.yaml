@@ -3,3 +3,4 @@ image_extensions:
   - .jpeg
 mask_extension: .png
 
+border_width_px: 3
