@@ -1,8 +1,9 @@
-"""Configuration loading for the validation-only stage scaffold."""
+"""Configuration loading for input validation and cutout measurements."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,6 +20,8 @@ class SegToCutConfig:
     image_extensions: tuple[str, ...] = (".jpg", ".jpeg")
     mask_extension: str = ".png"
     border_width_px: int = 3
+    edge_threshold: float = 0.05
+    cutout_version: str = "2.0"
 
 
 def _extension(value: Any, *, field: str) -> str:
@@ -78,13 +81,32 @@ def parse_config(data: Mapping[str, Any]) -> SegToCutConfig:
         )
 
     mask_extension = _extension(data.get("mask_extension", ".png"), field="mask_extension")
-    border_width_px = _positive_int(
-        data.get("border_width_px", 3), field="border_width_px"
-    )
+    border_width_px = _positive_int(data.get("border_width_px", 3), field="border_width_px")
+    edge_threshold = data.get("edge_threshold", 0.05)
+    if (
+        isinstance(edge_threshold, bool)
+        or not isinstance(edge_threshold, (int, float))
+        or not math.isfinite(edge_threshold)
+        or not 0 <= edge_threshold <= 1
+    ):
+        raise SegToCutConfigError(
+            ERROR_CONFIG_INVALID,
+            "edge_threshold must be a finite number in [0, 1]",
+            field="edge_threshold",
+        )
+    cutout_version = data.get("cutout_version", "2.0")
+    if not isinstance(cutout_version, str) or not cutout_version.strip():
+        raise SegToCutConfigError(
+            ERROR_CONFIG_INVALID,
+            "cutout_version must be a non-empty string",
+            field="cutout_version",
+        )
     return SegToCutConfig(
         image_extensions=image_extensions,
         mask_extension=mask_extension,
         border_width_px=border_width_px,
+        edge_threshold=float(edge_threshold),
+        cutout_version=cutout_version.strip(),
     )
 
 
@@ -108,4 +130,3 @@ def load_config(path: str | Path | None = None) -> SegToCutConfig:
             path=str(config_path),
         )
     return parse_config(data)
-

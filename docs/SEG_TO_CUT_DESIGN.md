@@ -127,7 +127,11 @@ left_fraction   = target pixels on left edge / cutout height
 right_fraction  = target pixels on right edge / cutout height
 ```
 
-The implementation may inspect a small band of pixels along each edge instead of a single pixel-wide line to reduce sensitivity to minor mask noise. The band width and edge threshold should be configurable and recorded in the metadata.
+The implementation uses the same `border_width_px` setting for cleanup and edge measurement, defaulting to 3 pixels. There is one shared width setting; changing it affects both operations. Each fraction is the number of target pixels in that band divided by the actual number of pixels in the band. Clip the band width to the crop height for top/bottom and to the crop width for left/right. Bands may overlap and are measured independently. A one-pixel band gives the formulas above. Record the configured width and threshold (default `0.05`) in metadata.
+
+`extends_border` separately records any foreground contact with the outermost pixel row or column, regardless of the threshold. A band may be flagged without outermost-pixel contact, and sparse contact may fall below the flagging threshold.
+
+Placement strings are `unrestricted`, `<side>_edge_only`, `<vertical>_<horizontal>_corner_only`, or `unsuitable`. Side lists always use top, bottom, left, right order.
 
 A side is flagged when its plant fraction is greater than the configured threshold. The resulting placement guidance is:
 
@@ -166,7 +170,7 @@ A practical first schema is:
       "removed_components": 2,
       "remaining_components": 46
     },
-    "extends_border": false,
+    "extends_border": true,
     "edge_cut": {
       "flagged": true,
       "threshold": 0.05,
@@ -240,17 +244,17 @@ The stage can calculate the following directly:
 | `cutout_height`, `cutout_width` | Dimensions of the bounding-box crop. |
 | `extends_border` | True when target pixels touch an edge of the local mask. |
 | `edge_cut` | Per-side plant fractions, flagged sides, source-image edge information, and synthetic-placement guidance. |
-| `blur_effect` | The same normalized blur measure selected for the historical cutouts. |
+| `blur_effect` | `skimage.measure.blur_effect` on the original RGB crop, with `h_size=11`, `channel_axis=-1`, and maximum across axes. Higher means blurrier. Undefined/non-finite results are `null`. |
 | `num_components` | Number of connected foreground regions in the local target mask. |
-| `cropout_rgb_mean` | Mean red, green, and blue values from the unmasked crop, scaled consistently with historical data. |
-| `cropout_rgb_std` | Red, green, and blue standard deviations from the unmasked crop. |
+| `cropout_rgb_mean` | Per-channel mean over every pixel of the original unmasked RGB crop, normalized by dividing by 255. |
+| `cropout_rgb_std` | Per-channel population standard deviation (`ddof=0`) over those same normalized RGB pixels. |
 | `bbox_area_cm2` | Physical area derived from world coordinates when the batch has usable georeferencing. Otherwise `null`. |
 | `estimated_bbox_area_cm2` | Estimated physical bounding-box area from the camera intrinsics, camera height, and pixel dimensions. The camera model and ground-plane assumptions must be defined; otherwise this is `null`. |
 | `species_mean_bbox_area_cm2` | Mean `estimated_bbox_area_cm2` for valid detections in the same batch and species or configured category group. |
 | `species_bbox_sample_size` | Number of valid detections used to calculate `species_mean_bbox_area_cm2`. |
 | `species_bbox_area_ratio` | Current `estimated_bbox_area_cm2` divided by `species_mean_bbox_area_cm2`. Otherwise `null` when the mean is unavailable or zero. |
 | `abnormal_bbox_size` | True when `species_bbox_area_ratio` differs from `1.0` by more than the configured percentage threshold. |
-| `solidity` | Area of the cleaned target mask divided by the area of its convex hull. |
+| `solidity` | Foreground pixel count divided by the pixel count of `skimage.morphology.convex_hull_image` over all cleaned foreground components, with `offset_coordinates=True` and `include_borders=True`. |
 
 Identity, season, camera, and classifier fields come from upstream data or the current catalog. They should not be inferred from image appearance.
 
@@ -342,7 +346,7 @@ Implementation work should add:
 - a `v_batches_needing_seg_to_cut` readiness view in the maintained SQLite
   schema and migration path;
 - a stage configuration with its input routes and CPU job resources;
-- result-sync and promotion support for the `semifield-cutouts` data state;
+- promotion support for the `semifield-cutouts` data state; Atlas-to-Ceres result sync is not required for this Ceres stage;
 - tests for staging, readiness, leases, run ingestion, and publication.
 
 The readiness view should select a batch only when its required images, segmentations, and georeferenced CSV are available, no successful `seg_to_cut` run has already completed, and no active lease exists.
@@ -385,7 +389,7 @@ Tests should include species and cultivar examples, bounding boxes touching imag
 3. **Add the stage command.** Produce the standard run directory, manifest,
    logs, stable exit codes, and run report.
 4. **Wire orchestration.** Add readiness, input staging, submission config,
-   leases, promotion, and result sync.
+   leases, promotion, and inventory reconciliation.
 5. **Validate on representative batches.** Compare file formats and selected
    properties with historical cutouts, including at least one species batch
    and one cultivar batch.
