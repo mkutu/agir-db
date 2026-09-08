@@ -40,10 +40,11 @@ def measurement_provenance(config: SegToCutConfig) -> dict[str, Any]:
         },
         "blur_effect": {
             "algorithm": "skimage.measure.blur_effect",
-            "pixel_selection": "whole_unmasked_crop",
-            "input": "before_jpeg_encoding",
+            "pixel_selection": "whole_black_masked_cutout",
+            "input": "before_png_encoding",
+            "background": "black",
             "h_size": BLUR_H_SIZE,
-            "channel_axis": -1,
+            "channel_axis": 2,
             "reduce_func": "max",
             "higher_is_blurrier": True,
             "undefined": None,
@@ -64,12 +65,15 @@ def measurement_provenance(config: SegToCutConfig) -> dict[str, Any]:
     }
 
 
-def calculate_crop_properties(rgb_crop: NDArray[np.uint8]) -> dict[str, Any]:
-    """Measure every RGB pixel before masking or JPEG encoding.
+
+def calculate_crop_properties(
+    rgb_crop: NDArray[np.uint8], cleaned_mask: NDArray[np.uint8]
+) -> dict[str, Any]:
+    """Measure historical RGB and blur properties before artifact encoding.
 
     Callers loading through OpenCV must convert BGR to RGB before calling.
-    Blur is undefined for spatial dimensions under three pixels or any non-finite
-    directional score; JSON receives null.
+    RGB statistics use every unmasked crop pixel. Blur uses the whole rectangular
+    crop after setting non-target pixels to black, matching ``GenCutoutProps``.
     """
     if (
         not isinstance(rgb_crop, np.ndarray)
@@ -79,18 +83,22 @@ def calculate_crop_properties(rgb_crop: NDArray[np.uint8]) -> dict[str, Any]:
         or min(rgb_crop.shape[:2]) == 0
     ):
         raise ValueError("rgb_crop must be a non-empty HxWx3 uint8 RGB array")
+    if (
+        not isinstance(cleaned_mask, np.ndarray)
+        or cleaned_mask.dtype != np.uint8
+        or cleaned_mask.ndim != 2
+        or cleaned_mask.shape != rgb_crop.shape[:2]
+    ):
+        raise ValueError("cleaned_mask must be a uint8 array matching the RGB crop")
 
     normalized = rgb_crop.astype(np.float64) / 255.0
+    cutout = np.where(cleaned_mask[..., None] != 0, rgb_crop, 0).astype(np.uint8)
     blur = None
     if min(rgb_crop.shape[:2]) >= 3:
-        # Inspect both directional values so max cannot hide a NaN depending on
-        # axis order. NumPy suppresses only the expected undefined divisions.
         with np.errstate(divide="ignore", invalid="ignore"):
-            directional = blur_effect(
-                rgb_crop, channel_axis=-1, h_size=BLUR_H_SIZE, reduce_func=None
-            )
-        if np.all(np.isfinite(directional)):
-            blur = float(np.max(directional))
+            score = blur_effect(cutout, channel_axis=2)
+        if np.isfinite(score):
+            blur = float(score)
     return {
         "cropout_rgb_mean": normalized.mean(axis=(0, 1)).tolist(),
         "cropout_rgb_std": normalized.std(axis=(0, 1), ddof=0).tolist(),
@@ -214,7 +222,8 @@ def calculate_cutout_properties(
         image_height=image_height,
         config=config,
     )
-    appearance = calculate_crop_properties(rgb_crop)
+    area = calculate_area_properties(world_bbox)
     if rgb_crop.shape[:2] != cleaned_mask.shape:
         raise ValueError("RGB crop and cleaned mask dimensions must agree")
+    appearance = calculate_crop_properties(rgb_crop, cleaned_mask)
     return {**properties, **appearance}

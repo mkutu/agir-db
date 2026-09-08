@@ -244,7 +244,7 @@ The stage can calculate the following directly:
 | `cutout_height`, `cutout_width` | Dimensions of the bounding-box crop. |
 | `extends_border` | True when target pixels touch an edge of the local mask. |
 | `edge_cut` | Per-side plant fractions, flagged sides, source-image edge information, and synthetic-placement guidance. |
-| `blur_effect` | `skimage.measure.blur_effect` on the original RGB crop, with `h_size=11`, `channel_axis=-1`, and maximum across axes. Higher means blurrier. Undefined/non-finite results are `null`. |
+| `blur_effect` | Historical calculation: `skimage.measure.blur_effect` over the whole black-masked cutout, with non-target pixels set to black, default `h_size=11`, `channel_axis=2`, and maximum across axes. Higher means blurrier. Undefined/non-finite results are `null`. |
 | `num_components` | Number of connected foreground regions in the local target mask. |
 | `cropout_rgb_mean` | Per-channel mean over every pixel of the original unmasked RGB crop, normalized by dividing by 255. |
 | `cropout_rgb_std` | Per-channel population standard deviation (`ddof=0`) over those same normalized RGB pixels. |
