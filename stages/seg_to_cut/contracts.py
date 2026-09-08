@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -25,6 +26,22 @@ class PixelBoundingBox:
 
 
 @dataclass(frozen=True)
+class WorldBoundingBox:
+    """Four ordered bounding-box corners in one projected CRS."""
+
+    top_left: tuple[float, float]
+    top_right: tuple[float, float]
+    bottom_left: tuple[float, float]
+    bottom_right: tuple[float, float]
+    crs: str
+
+    @property
+    def polygon(self) -> tuple[tuple[float, float], ...]:
+        """Return perimeter order for planar polygon-area calculations."""
+        return (self.top_left, self.top_right, self.bottom_right, self.bottom_left)
+
+
+@dataclass(frozen=True)
 class DetectionInput:
     image_id: str
     bounding_box_id: int
@@ -33,6 +50,22 @@ class DetectionInput:
     class_id: int
     species_id: str
     cultivar_id: str | None = None
+    world_bbox: WorldBoundingBox | None = None
+
+    @property
+    def identity(self) -> tuple[str, int]:
+        return (self.image_id, self.bounding_box_id)
+
+
+@dataclass(frozen=True)
+class AreaMetricInput:
+    """Per-cutout estimate used to finalize batch/category area metrics."""
+
+    image_id: str
+    bounding_box_id: int
+    species_id: str
+    cultivar_id: str | None
+    bbox_area_cm2: float | None
 
     @property
     def identity(self) -> tuple[str, int]:

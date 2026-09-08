@@ -32,6 +32,7 @@ from .contracts import (
     DetectionInput,
     PixelBoundingBox,
     ValidatedImageInput,
+    WorldBoundingBox,
 )
 from .errors import SegToCutInputError
 
@@ -43,6 +44,26 @@ REQUIRED_CSV_COLUMNS = (
     "xmax",
     "ymax",
     "species_id",
+    "world_tl_x",
+    "world_tl_y",
+    "world_tr_x",
+    "world_tr_y",
+    "world_bl_x",
+    "world_bl_y",
+    "world_br_x",
+    "world_br_y",
+    "crs",
+)
+
+WORLD_COORDINATE_COLUMNS = (
+    "world_tl_x",
+    "world_tl_y",
+    "world_tr_x",
+    "world_tr_y",
+    "world_bl_x",
+    "world_bl_y",
+    "world_br_x",
+    "world_br_y",
 )
 
 
@@ -54,6 +75,7 @@ class _DetectionRow:
     normalized_bbox: tuple[float, float, float, float]
     species_id: str
     cultivar_id: str | None
+    world_bbox: WorldBoundingBox | None
 
 
 def _input_error(code: str, message: str, **context: Any) -> SegToCutInputError:
@@ -103,6 +125,35 @@ def _parse_coordinate(value: Any, *, field: str, context: str) -> float:
             field=field,
         )
     return parsed
+
+
+def _parse_optional_world_bbox(row: Mapping[str, Any]) -> WorldBoundingBox | None:
+    """Parse a complete finite world box, otherwise mark its area unavailable.
+
+    ``det_to_world`` emits these columns blank for non-georeferenced batches.
+    Partial or malformed values likewise cannot support a physical area and are
+    retained as ``None`` instead of being guessed.
+    """
+
+    raw_coordinates = [str(row.get(column) or "").strip() for column in WORLD_COORDINATE_COLUMNS]
+    crs = str(row.get("crs") or "").strip()
+    if not any(raw_coordinates) and not crs:
+        return None
+    if not all(raw_coordinates) or not crs:
+        return None
+    try:
+        coordinates = tuple(float(value) for value in raw_coordinates)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in coordinates):
+        return None
+    return WorldBoundingBox(
+        top_left=(coordinates[0], coordinates[1]),
+        top_right=(coordinates[2], coordinates[3]),
+        bottom_left=(coordinates[4], coordinates[5]),
+        bottom_right=(coordinates[6], coordinates[7]),
+        crs=crs,
+    )
 
 
 def load_detection_rows(path: str | Path) -> tuple[_DetectionRow, ...]:
@@ -169,6 +220,7 @@ def load_detection_rows(path: str | Path) -> tuple[_DetectionRow, ...]:
                     normalized_bbox=normalized_bbox,
                     species_id=species_id,
                     cultivar_id=cultivar_id,
+                    world_bbox=_parse_optional_world_bbox(row),
                 )
             )
 
@@ -273,9 +325,7 @@ def load_catalog(path: str | Path) -> tuple[Mapping[str, Any], frozenset[int]]:
                 f"Species catalog entry {species_id!r} must contain class_id",
             )
         known.add(
-            _parse_mask_class_id(
-                entry["class_id"], context=f"species {species_id!r} class_id"
-            )
+            _parse_mask_class_id(entry["class_id"], context=f"species {species_id!r} class_id")
         )
     for cultivar_id, entry in cultivars.items():
         if not isinstance(entry, Mapping):
@@ -378,12 +428,8 @@ def discover_and_validate_inputs(
     except ClassIdResolutionError as exc:
         raise _input_error(ERROR_CSV_INVALID, str(exc)) from exc
 
-    image_index = _build_file_index(
-        images_dir, extensions=config.image_extensions, kind="image"
-    )
-    mask_index = _build_file_index(
-        masks_dir, extensions=(config.mask_extension,), kind="mask"
-    )
+    image_index = _build_file_index(images_dir, extensions=config.image_extensions, kind="image")
+    mask_index = _build_file_index(masks_dir, extensions=(config.mask_extension,), kind="mask")
 
     rows_by_image: dict[str, list[_DetectionRow]] = {}
     for row in rows:
@@ -445,6 +491,7 @@ def discover_and_validate_inputs(
                     class_id=class_id,
                     species_id=row.species_id,
                     cultivar_id=row.cultivar_id,
+                    world_bbox=row.world_bbox,
                 )
             )
         validated_images.append(

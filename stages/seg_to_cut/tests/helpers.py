@@ -62,6 +62,15 @@ def write_csv(paths: dict[str, Path], rows: list[dict[str, object]]) -> None:
         "ymax",
         "species_id",
         "cultivar_id",
+        "world_tl_x",
+        "world_tl_y",
+        "world_tr_x",
+        "world_tr_y",
+        "world_bl_x",
+        "world_bl_y",
+        "world_br_x",
+        "world_br_y",
+        "crs",
     ]
     with paths["csv"].open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=columns)
@@ -76,8 +85,10 @@ def detection_row(
     bbox: tuple[float, float, float, float] = (0.1, 0.2, 0.8, 0.9),
     species_id: str = "ABUTH",
     cultivar_id: str = "",
+    world_bbox: tuple[float, float, float, float, float, float, float, float] | None = None,
+    crs: str = "EPSG:32617",
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "image_id": image_id,
         "bounding_box_id": bounding_box_id,
         "xmin": bbox[0],
@@ -87,4 +98,17 @@ def detection_row(
         "species_id": species_id,
         "cultivar_id": cultivar_id,
     }
-
+    world_columns = (
+        "world_tl_x",
+        "world_tl_y",
+        "world_tr_x",
+        "world_tr_y",
+        "world_bl_x",
+        "world_bl_y",
+        "world_br_x",
+        "world_br_y",
+    )
+    if world_bbox is not None:
+        row.update(zip(world_columns, world_bbox))
+        row["crs"] = crs
+    return row

@@ -6,17 +6,22 @@ integration and run-report emission are handled by later implementation steps.
 
 from __future__ import annotations
 
+import math
+from collections import defaultdict
+from collections.abc import Sequence
 from typing import Any
 
 import cv2
 import numpy as np
 import skimage
 from numpy.typing import NDArray
+from pyproj import CRS
+from pyproj.exceptions import CRSError
 from skimage.measure import blur_effect
 from skimage.morphology import convex_hull_image
 
 from .config import SegToCutConfig, parse_config
-from .contracts import PixelBoundingBox
+from .contracts import AreaMetricInput, PixelBoundingBox, WorldBoundingBox
 
 SIDES = ("top", "bottom", "left", "right")
 BLUR_H_SIZE = 11
@@ -62,8 +67,171 @@ def measurement_provenance(config: SegToCutConfig) -> dict[str, Any]:
             "scope": "all_cleaned_foreground",
         },
         "component_connectivity": 8,
+        "area_metrics": {
+            "bbox_area_source": config.bbox_area_source,
+            "world_area_algorithm": "planar_shoelace",
+            "world_area_output_unit": "cm2",
+            "camera_area_status": "unavailable_pending_xyz_camera_source",
+            "species_bbox_grouping": "resolved_category",
+            "species_bbox_min_sample_size": config.species_bbox_min_sample_size,
+            "abnormal_bbox_size_threshold": config.abnormal_bbox_size_threshold,
+        },
     }
 
+
+def _segments_intersect(
+    first_start: tuple[float, float],
+    first_end: tuple[float, float],
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+) -> bool:
+    """Return whether two non-adjacent polygon edges intersect or are collinear."""
+
+    def orientation(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        point: tuple[float, float],
+    ) -> float:
+        return (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (
+            point[0] - start[0]
+        )
+
+    values = (
+        orientation(first_start, first_end, second_start),
+        orientation(first_start, first_end, second_end),
+        orientation(second_start, second_end, first_start),
+        orientation(second_start, second_end, first_end),
+    )
+    if any(math.isclose(value, 0.0, abs_tol=1e-12) for value in values):
+        return True
+    return (values[0] > 0) != (values[1] > 0) and (values[2] > 0) != (values[3] > 0)
+
+
+def calculate_bbox_area_cm2(world_bbox: WorldBoundingBox | None) -> float | None:
+    """Calculate planar quadrilateral area in cm² for a supported projected CRS."""
+
+    if world_bbox is None:
+        return None
+    points = world_bbox.polygon
+    try:
+        coordinates_are_finite = all(
+            math.isfinite(value) for point in points for value in point
+        )
+    except TypeError:
+        return None
+    if len(set(points)) != 4 or not coordinates_are_finite:
+        return None
+    if _segments_intersect(points[0], points[1], points[2], points[3]) or _segments_intersect(
+        points[1], points[2], points[3], points[0]
+    ):
+        return None
+    try:
+        crs = CRS.from_user_input(world_bbox.crs)
+    except (CRSError, TypeError, ValueError):
+        return None
+    if not crs.is_projected or len(crs.axis_info) < 2:
+        return None
+    x_factor = crs.axis_info[0].unit_conversion_factor
+    y_factor = crs.axis_info[1].unit_conversion_factor
+    if not all(
+        factor is not None and math.isfinite(factor) and factor > 0
+        for factor in (x_factor, y_factor)
+    ):
+        return None
+    # Translate near the origin before the shoelace sum to avoid cancellation
+    # for large UTM eastings/northings surrounding a small plant box.
+    origin_x, origin_y = points[0]
+    local_points = tuple((x - origin_x, y - origin_y) for x, y in points)
+    twice_native_area = abs(
+        sum(
+            point[0] * local_points[(index + 1) % len(local_points)][1]
+            - local_points[(index + 1) % len(local_points)][0] * point[1]
+            for index, point in enumerate(local_points)
+        )
+    )
+    native_area = twice_native_area / 2.0
+    area_cm2 = native_area * x_factor * y_factor * 10_000.0
+    return float(area_cm2) if math.isfinite(area_cm2) and area_cm2 > 0 else None
+
+
+def calculate_area_properties(
+    world_bbox: WorldBoundingBox | None, *, config: SegToCutConfig
+) -> dict[str, float | None]:
+    """Return the configured physical bounding-box area."""
+
+    if config.bbox_area_source == "georeferenced_csv":
+        area = calculate_bbox_area_cm2(world_bbox)
+    elif config.bbox_area_source == "camera":
+        # The future camera calculation will consume the authoritative XYZ
+        # camera-location input. Until that contract exists, the value is null.
+        area = None
+    else:
+        raise ValueError(f"unsupported bbox area source: {config.bbox_area_source!r}")
+    return {"bbox_area_cm2": area}
+
+
+def _valid_area(value: float | None) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _area_group(record: AreaMetricInput) -> tuple[str, str]:
+    if not record.species_id:
+        raise ValueError("species_id must be non-empty")
+    if record.cultivar_id:
+        return ("cultivar", record.cultivar_id)
+    return ("species", record.species_id)
+
+
+def finalize_species_bbox_metrics(
+    records: Sequence[AreaMetricInput],
+    *,
+    config: SegToCutConfig,
+) -> dict[tuple[str, int], dict[str, float | int | bool | None]]:
+    """Finalize deterministic per-category statistics for valid cutouts.
+
+    Callers pass detections that remain valid after mask cleanup. Only finite,
+    positive bounding-box areas contribute to a group. When the configured
+    source cannot provide an area, group sample sizes are zero and all derived
+    values remain null.
+    """
+
+    parse_config(vars(config))
+    groups: dict[tuple[str, str], list[float]] = defaultdict(list)
+    seen: set[tuple[str, int]] = set()
+    for record in records:
+        if record.identity in seen:
+            raise ValueError(f"duplicate area-metric identity: {record.identity!r}")
+        seen.add(record.identity)
+        group = _area_group(record)
+        if _valid_area(record.bbox_area_cm2):
+            groups[group].append(float(record.bbox_area_cm2))
+
+    finalized: dict[tuple[str, int], dict[str, float | int | bool | None]] = {}
+    for record in records:
+        values = groups[_area_group(record)]
+        sample_size = len(values)
+        mean = (
+            float(math.fsum(values) / sample_size)
+            if sample_size >= config.species_bbox_min_sample_size
+            else None
+        )
+        ratio = None
+        abnormal = None
+        if mean is not None and mean > 0 and _valid_area(record.bbox_area_cm2):
+            ratio = float(record.bbox_area_cm2 / mean)
+            abnormal = abs(ratio - 1.0) > config.abnormal_bbox_size_threshold
+        finalized[record.identity] = {
+            "species_mean_bbox_area_cm2": mean,
+            "species_bbox_sample_size": sample_size,
+            "species_bbox_area_ratio": ratio,
+            "abnormal_bbox_size": abnormal,
+        }
+    return finalized
 
 
 def calculate_crop_properties(
@@ -212,6 +380,7 @@ def calculate_cutout_properties(
     image_width: int,
     image_height: int,
     config: SegToCutConfig,
+    world_bbox: WorldBoundingBox | None = None,
 ) -> dict[str, Any]:
     """Combine mask and appearance fields for a validated, cleaned cutout."""
     properties = calculate_mask_properties(
@@ -222,8 +391,8 @@ def calculate_cutout_properties(
         image_height=image_height,
         config=config,
     )
-    area = calculate_area_properties(world_bbox)
+    area = calculate_area_properties(world_bbox, config=config)
     if rgb_crop.shape[:2] != cleaned_mask.shape:
         raise ValueError("RGB crop and cleaned mask dimensions must agree")
     appearance = calculate_crop_properties(rgb_crop, cleaned_mask)
-    return {**properties, **appearance}
+    return {**properties, **appearance, **area}

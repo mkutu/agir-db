@@ -187,7 +187,6 @@ A practical first schema is:
       }
     },
     "bbox_area_cm2": 2750.47,
-    "estimated_bbox_area_cm2": 2701.18,
     "species_mean_bbox_area_cm2": 2401.05,
     "species_bbox_sample_size": 128,
     "species_bbox_area_ratio": 1.125,
@@ -248,17 +247,18 @@ The stage can calculate the following directly:
 | `num_components` | Number of connected foreground regions in the local target mask. |
 | `cropout_rgb_mean` | Per-channel mean over every pixel of the original unmasked RGB crop, normalized by dividing by 255. |
 | `cropout_rgb_std` | Per-channel population standard deviation (`ddof=0`) over those same normalized RGB pixels. |
-| `bbox_area_cm2` | Physical area derived from world coordinates when the batch has usable georeferencing. Otherwise `null`. |
-| `estimated_bbox_area_cm2` | Estimated physical bounding-box area from the camera intrinsics, camera height, and pixel dimensions. The camera model and ground-plane assumptions must be defined; otherwise this is `null`. |
-| `species_mean_bbox_area_cm2` | Mean `estimated_bbox_area_cm2` for valid detections in the same batch and species or configured category group. |
+| `bbox_area_cm2` | Physical bounding-box area from the configured source. The current `georeferenced_csv` source uses projected world corners; the future `camera` source will use authoritative XYZ camera-location data. Otherwise `null`. |
+| `species_mean_bbox_area_cm2` | Mean `bbox_area_cm2` for valid detections in the same batch, grouped by cultivar when present and otherwise by species. |
 | `species_bbox_sample_size` | Number of valid detections used to calculate `species_mean_bbox_area_cm2`. |
-| `species_bbox_area_ratio` | Current `estimated_bbox_area_cm2` divided by `species_mean_bbox_area_cm2`. Otherwise `null` when the mean is unavailable or zero. |
+| `species_bbox_area_ratio` | Current `bbox_area_cm2` divided by `species_mean_bbox_area_cm2`. Otherwise `null` when the mean is unavailable or zero. |
 | `abnormal_bbox_size` | True when `species_bbox_area_ratio` differs from `1.0` by more than the configured percentage threshold. |
 | `solidity` | Foreground pixel count divided by the pixel count of `skimage.morphology.convex_hull_image` over all cleaned foreground components, with `offset_coordinates=True` and `include_borders=True`. |
 
 Identity, season, camera, and classifier fields come from upstream data or the current catalog. They should not be inferred from image appearance.
 
-The species-level area metrics require a batch aggregation step. The stage should first calculate valid per-cutout area estimates, group them by species or the configured category group, and then finalize each cutout's mean, sample size, ratio, and abnormal-size flag. The abnormal-size percentage threshold and grouping rule must be configurable and recorded in the metadata or run report.
+The species-level area metrics require a batch aggregation step. The stage should first calculate valid per-cutout areas, group them by `cultivar_id` when present and otherwise by `species_id`, and then finalize each cutout's mean, sample size, ratio, and abnormal-size flag. The area source and abnormal-size percentage threshold must be configurable, and the fixed grouping rule must be recorded in the metadata or run report.
+
+The `bbox_area.source` configuration selects `georeferenced_csv` or `camera`. The CSV source calculates `bbox_area_cm2` from a complete valid world-coordinate box in a supported projected CRS. Camera mode returns `null` until the future authoritative XYZ camera-location input and area model are defined; consequently, its batch sample size is `0` and the mean, ratio, and abnormal-size flag are `null`.
 
 ## Processing Flow
 
