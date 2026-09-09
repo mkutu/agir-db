@@ -19,7 +19,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent / "configs" / "default.yaml"
 class SegToCutConfig:
     image_extensions: tuple[str, ...] = (".jpg", ".jpeg")
     mask_extension: str = ".png"
-    border_width_px: int = 3
+    border_width_px: int = 100
     edge_threshold: float = 0.05
     cutout_version: str = "2.0"
     bbox_area_source: str = "georeferenced_csv"
@@ -114,7 +114,7 @@ def parse_config(data: Mapping[str, Any]) -> SegToCutConfig:
         )
 
     mask_extension = _extension(data.get("mask_extension", ".png"), field="mask_extension")
-    border_width_px = _positive_int(data.get("border_width_px", 3), field="border_width_px")
+    border_width_px = _positive_int(data.get("border_width_px", 100), field="border_width_px")
     edge_threshold = _fraction(data.get("edge_threshold", 0.05), field="edge_threshold")
     cutout_version = data.get("cutout_version", "2.0")
     if not isinstance(cutout_version, str) or not cutout_version.strip():

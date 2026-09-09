@@ -127,7 +127,7 @@ left_fraction   = target pixels on left edge / cutout height
 right_fraction  = target pixels on right edge / cutout height
 ```
 
-The implementation uses the same `border_width_px` setting for cleanup and edge measurement, defaulting to 3 pixels. There is one shared width setting; changing it affects both operations. Each fraction is the number of target pixels in that band divided by the actual number of pixels in the band. Clip the band width to the crop height for top/bottom and to the crop width for left/right. Bands may overlap and are measured independently. A one-pixel band gives the formulas above. Record the configured width and threshold (default `0.05`) in metadata.
+The implementation uses the same `border_width_px` setting for cleanup and edge measurement, defaulting to 100 pixels. There is one shared width setting; changing it affects both operations. Each fraction is the number of target pixels in that band divided by the actual number of pixels in the band. Clip the band width to the crop height for top/bottom and to the crop width for left/right. Bands may overlap and are measured independently. A one-pixel band gives the formulas above. Record the configured width and threshold (default `0.05`) in metadata.
 
 `extends_border` separately records any foreground contact with the outermost pixel row or column, regardless of the threshold. A band may be flagged without outermost-pixel contact, and sparse contact may fall below the flagging threshold.
 
@@ -166,7 +166,7 @@ A practical first schema is:
     "is_primary": true,
     "intruder_cleanup": {
       "method": "border_sweep",
-      "border_width_px": 3,
+      "border_width_px": 100,
       "removed_components": 2,
       "remaining_components": 46
     },
