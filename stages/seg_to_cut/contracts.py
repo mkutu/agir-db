@@ -1,4 +1,4 @@
-"""Immutable input-validation results used by later cutout processing."""
+"""Immutable contracts used by segmentation-to-cutout processing."""
 
 from __future__ import annotations
 
@@ -109,3 +109,22 @@ class CleanupResult:
     @property
     def skipped(self) -> bool:
         return self.skip_reason is not None
+
+
+@dataclass(frozen=True)
+class CutoutArtifactSet:
+    """The four files that make one successfully written cutout."""
+
+    cropout_path: Path
+    cutout_path: Path
+    mask_path: Path
+    metadata_path: Path
+
+    @property
+    def paths(self) -> tuple[Path, Path, Path, Path]:
+        return (
+            self.cropout_path,
+            self.cutout_path,
+            self.mask_path,
+            self.metadata_path,
+        )

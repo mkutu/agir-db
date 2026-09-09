@@ -21,3 +21,6 @@ class SegToCutConfigError(SegToCutError):
 class SegToCutInputError(SegToCutError):
     """Raised when batch inputs violate the stage contract."""
 
+
+class SegToCutArtifactError(SegToCutError):
+    """Raised when a complete, validated cutout set cannot be written."""
