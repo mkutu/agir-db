@@ -86,6 +86,44 @@ def test_cultivar_id_is_the_expected_mask_value(input_paths) -> None:
     assert result.images[0].detections[0].cultivar_id == "107"
 
 
+def test_world_bbox_is_retained(input_paths) -> None:
+    write_image_and_mask(input_paths, "image_1")
+    corners = (500000.0, 3900000.0, 500002.0, 3900000.0, 500000.0, 3899997.0, 500002.0, 3899997.0)
+    write_csv(input_paths, [detection_row("image_1", 0, world_bbox=corners)])
+
+    detection = validate(input_paths).images[0].detections[0]
+
+    assert detection.world_bbox is not None
+    assert detection.world_bbox.polygon == (
+        (500000.0, 3900000.0),
+        (500002.0, 3900000.0),
+        (500002.0, 3899997.0),
+        (500000.0, 3899997.0),
+    )
+    assert detection.world_bbox.crs == "EPSG:32617"
+
+
+def test_blank_world_bbox_is_supported(input_paths) -> None:
+    write_image_and_mask(input_paths, "image_1")
+    write_csv(input_paths, [detection_row("image_1", 0)])
+
+    assert validate(input_paths).images[0].detections[0].world_bbox is None
+
+
+@pytest.mark.parametrize("bad_value", ["", "bad", "nan", "inf"])
+def test_incomplete_or_invalid_world_bbox_is_unavailable(input_paths, bad_value) -> None:
+    write_image_and_mask(input_paths, "image_1")
+    row = detection_row(
+        "image_1",
+        0,
+        world_bbox=(500000, 3900000, 500002, 3900000, 500000, 3899997, 500002, 3899997),
+    )
+    row["world_br_y"] = bad_value
+    write_csv(input_paths, [row])
+
+    assert validate(input_paths).images[0].detections[0].world_bbox is None
+
+
 def test_normalized_bbox_is_clipped_with_half_open_edges() -> None:
     bbox = normalized_bbox_to_pixels(
         (-0.1, 0.21, 1.1, 0.89),
