@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
@@ -86,6 +87,7 @@ class ValidatedImageInput:
 class BatchValidationResult:
     images: tuple[ValidatedImageInput, ...]
     known_class_ids: frozenset[int]
+    catalog: Mapping[str, Any]
 
     @property
     def image_count(self) -> int:
@@ -128,3 +130,23 @@ class CutoutArtifactSet:
             self.mask_path,
             self.metadata_path,
         )
+
+
+@dataclass(frozen=True)
+class CutoutProcessingResult:
+    """Outcome for one detection processed by the runnable stage."""
+
+    image_id: str
+    bounding_box_id: int
+    cutout_id: str
+    status: str
+    artifacts: CutoutArtifactSet | None = None
+    skip_reason: str | None = None
+    error_code: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    retryable: bool = False
+
+    @property
+    def identity(self) -> tuple[str, int]:
+        return (self.image_id, self.bounding_box_id)
