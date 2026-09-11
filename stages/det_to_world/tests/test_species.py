@@ -6,8 +6,12 @@ import pytest
 from shapely.geometry import box
 
 from stages.det_to_world.species import (
+    COLOR_CHECKER_CLASS_ID,
+    COLOR_CHECKER_SPECIES_ID,
+    NO_DETECTIONS_METHOD,
+    UNKNOWN_CLASS_ID,
+    UNKNOWN_SPECIES_ID,
     UnknownSpeciesCodeError,
-    ZoneTooFarError,
     assign_monoculture,
     assign_spatial,
     enrich_with_catalog,
@@ -180,16 +184,35 @@ def test_assign_spatial_nearest_fallback(geo_df, shapefile):
     assert (outside["assignment_method"] == "nearest_polygon").all()
 
 
-def test_assign_spatial_raises_when_nearest_zone_beyond_default_threshold(far_geo_df, shapefile):
-    """A detection ~99m from every zone polygon exceeds the 5m default and raises."""
-    with pytest.raises(ZoneTooFarError, match="IMG_0001:0"):
-        assign_spatial(far_geo_df, str(shapefile))
+def test_assign_spatial_tags_unknown_when_nearest_zone_beyond_default_threshold(far_geo_df, shapefile):
+    """A detection ~99m from every zone polygon exceeds the 5m default and is
+    tagged UNKNOWN instead of failing the batch."""
+    result = assign_spatial(far_geo_df, str(shapefile))
+
+    assert result.loc[0, "species_id"] == UNKNOWN_SPECIES_ID
+    assert result.loc[0, "assignment_method"] == "unknown_too_far"
 
 
-def test_assign_spatial_raises_when_nearest_zone_beyond_custom_threshold(geo_df, shapefile):
-    """A custom, stricter max_nearest_distance_m can flag a point normally within tolerance."""
-    with pytest.raises(ZoneTooFarError, match="IMG_0001:2"):
-        assign_spatial(geo_df, str(shapefile), max_nearest_distance_m=1.0)
+def test_assign_spatial_tags_unknown_when_nearest_zone_beyond_custom_threshold(geo_df, shapefile):
+    """A custom, stricter max_nearest_distance_m can flag a point normally within
+    tolerance, tagging it UNKNOWN instead of failing the batch."""
+    result = assign_spatial(geo_df, str(shapefile), max_nearest_distance_m=1.0)
+
+    outside = result[result["bounding_box_id"] == 2].iloc[0]
+    assert outside["species_id"] == UNKNOWN_SPECIES_ID
+    assert outside["assignment_method"] == "unknown_too_far"
+
+    # the two in-zone detections are unaffected by the stricter threshold
+    inside = result[result["bounding_box_id"].isin([0, 1])]
+    assert set(inside["species_id"]) == {"ABUTH", "BETVU"}
+
+
+def test_assign_spatial_tags_unknown_class_id_when_present(far_geo_df, class_id_shapefile):
+    """A too-far detection gets UNKNOWN_CLASS_ID when the shapefile carries
+    class_id for its zones, same as any other zone attribute."""
+    result = assign_spatial(far_geo_df, str(class_id_shapefile))
+
+    assert result.loc[0, "class_id"] == UNKNOWN_CLASS_ID
 
 
 def test_assign_spatial_nearest_fallback_within_custom_threshold(far_geo_df, shapefile):
@@ -232,6 +255,226 @@ def test_assign_spatial_no_class_id_column_when_shapefile_lacks_it(geo_df, shape
     assert "class_id" not in result.columns
 
 
+@pytest.fixture
+def geo_df_with_color_checker():
+    """Same layout as geo_df, plus a color-checker row interleaved between
+    the two in-zone detections — sitting inside zone 1 (would normally match
+    ABUTH/class_id 75) — to verify it gets the fixed colorchecker identity
+    instead, and that original row order survives the split/rejoin."""
+    return pd.DataFrame(
+        {
+            "image_id": ["IMG_0001"] * 4,
+            "bounding_box_id": [0, 1, 2, 3],
+            "classname": ["weed", "color_checker", "weed", "weed"],
+            "conf": [0.95, 0.99, 0.90, 0.85],
+            "xmin": [0.1, 0.3, 0.4, 0.7],
+            "ymin": [0.1, 0.3, 0.4, 0.7],
+            "xmax": [0.2, 0.35, 0.5, 0.8],
+            "ymax": [0.2, 0.35, 0.5, 0.8],
+            # inside zone 1, inside zone 1, inside zone 2, just outside both
+            "world_centroid_x": [5.0, 6.0, 25.0, 12.0],
+            "world_centroid_y": [5.0, 6.0, 25.0, 12.0],
+            "world_tl_x": [4.0, 5.0, 24.0, 11.0],
+            "world_tl_y": [4.0, 5.0, 24.0, 11.0],
+            "world_tr_x": [6.0, 7.0, 26.0, 13.0],
+            "world_tr_y": [4.0, 5.0, 24.0, 11.0],
+            "world_bl_x": [4.0, 5.0, 24.0, 11.0],
+            "world_bl_y": [6.0, 7.0, 26.0, 13.0],
+            "world_br_x": [6.0, 7.0, 26.0, 13.0],
+            "world_br_y": [6.0, 7.0, 26.0, 13.0],
+            "crs": [ZONE_CRS] * 4,
+        }
+    )
+
+
+@pytest.fixture
+def far_color_checker_df():
+    """A color-checker ~99m from every zone polygon — must get the
+    COLORCHECKER identity, not UNKNOWN, since color-checker rows never enter
+    the spatial join at all (contrast with far_geo_df, a plant at the same
+    distance, which gets tagged UNKNOWN instead)."""
+    return pd.DataFrame(
+        {
+            "image_id": ["IMG_0001"],
+            "bounding_box_id": [0],
+            "classname": ["color_checker"],
+            "conf": [0.99],
+            "xmin": [0.1],
+            "ymin": [0.1],
+            "xmax": [0.2],
+            "ymax": [0.2],
+            "world_centroid_x": [100.0],
+            "world_centroid_y": [100.0],
+            "world_tl_x": [99.0],
+            "world_tl_y": [99.0],
+            "world_tr_x": [101.0],
+            "world_tr_y": [99.0],
+            "world_bl_x": [99.0],
+            "world_bl_y": [101.0],
+            "world_br_x": [101.0],
+            "world_br_y": [101.0],
+            "crs": [ZONE_CRS],
+        }
+    )
+
+
+def test_assign_spatial_color_checker_excluded_from_zone_species(geo_df_with_color_checker, class_id_shapefile):
+    """A color-checker centroid sitting inside a zone polygon gets the fixed
+    COLORCHECKER identity, not that zone's species/class_id — and the real
+    plant detections around it are unaffected."""
+    result = assign_spatial(geo_df_with_color_checker, str(class_id_shapefile))
+
+    checker = result[result["bounding_box_id"] == 1].iloc[0]
+    assert checker["species_id"] == COLOR_CHECKER_SPECIES_ID
+    assert checker["class_id"] == COLOR_CHECKER_CLASS_ID
+    assert checker["assignment_method"] == "color_checker_class"
+
+    plants = result[result["bounding_box_id"].isin([0, 2])]
+    assert set(plants["species_id"]) == {"ABUTH", "BETVU"}
+    assert set(plants["class_id"]) == {"75", "76"}
+
+
+def test_assign_spatial_preserves_row_order_with_color_checker(geo_df_with_color_checker, shapefile):
+    """Splitting color-checker rows out for exclusion and rejoining them
+    afterward must not reshuffle the batch's row order."""
+    result = assign_spatial(geo_df_with_color_checker, str(shapefile))
+    assert list(result["bounding_box_id"]) == [0, 1, 2, 3]
+
+
+def test_assign_spatial_color_checker_skips_zone_too_far_check(far_color_checker_df, shapefile):
+    """A color-checker this far from every zone would get tagged UNKNOWN if
+    it were a plant (see
+    test_assign_spatial_tags_unknown_when_nearest_zone_beyond_default_threshold);
+    since it never enters the join, it keeps its COLORCHECKER identity instead."""
+    result = assign_spatial(far_color_checker_df, str(shapefile))
+    assert result.loc[0, "species_id"] == COLOR_CHECKER_SPECIES_ID
+    assert result.loc[0, "assignment_method"] == "color_checker_class"
+
+
+def test_assign_spatial_all_color_checkers(far_color_checker_df, shapefile):
+    """A batch that's entirely color-checker rows (no plants at all) still
+    resolves without ever touching the shapefile's zones."""
+    result = assign_spatial(far_color_checker_df, str(shapefile))
+    assert len(result) == 1
+    assert result.loc[0, "species_id"] == COLOR_CHECKER_SPECIES_ID
+
+
+@pytest.fixture
+def geo_df_with_ungeoreferenced():
+    """Same layout as geo_df, plus a fourth row with no world coordinates at
+    all — as remap_rows() now produces for a detection it couldn't
+    georeference (no grid for the image, or every bbox corner missed the
+    grid surface even after nudging)."""
+    return pd.DataFrame(
+        {
+            "image_id": ["IMG_0001"] * 4,
+            "bounding_box_id": [0, 1, 2, 3],
+            "classname": ["weed", "weed", "weed", "weed"],
+            "conf": [0.95, 0.90, 0.85, 0.80],
+            "xmin": [0.1, 0.4, 0.7, 0.5],
+            "ymin": [0.1, 0.4, 0.7, 0.5],
+            "xmax": [0.2, 0.5, 0.8, 0.6],
+            "ymax": [0.2, 0.5, 0.8, 0.6],
+            "world_centroid_x": [5.0, 25.0, 12.0, None],
+            "world_centroid_y": [5.0, 25.0, 12.0, None],
+            "world_tl_x": [4.0, 24.0, 11.0, None],
+            "world_tl_y": [4.0, 24.0, 11.0, None],
+            "world_tr_x": [6.0, 26.0, 13.0, None],
+            "world_tr_y": [4.0, 24.0, 11.0, None],
+            "world_bl_x": [4.0, 24.0, 11.0, None],
+            "world_bl_y": [6.0, 26.0, 13.0, None],
+            "world_br_x": [6.0, 26.0, 13.0, None],
+            "world_br_y": [6.0, 26.0, 13.0, None],
+            "crs": [ZONE_CRS, ZONE_CRS, ZONE_CRS, None],
+        }
+    )
+
+
+def test_assign_spatial_tags_unknown_for_ungeoreferenced_rows(geo_df_with_ungeoreferenced, shapefile):
+    """A row with no world coordinates gets tagged UNKNOWN instead of being
+    dropped or crashing the spatial join; georeferenced rows are unaffected."""
+    result = assign_spatial(geo_df_with_ungeoreferenced, str(shapefile))
+
+    missing = result[result["bounding_box_id"] == 3].iloc[0]
+    assert missing["species_id"] == UNKNOWN_SPECIES_ID
+    assert missing["assignment_method"] == "unknown_not_georeferenced"
+
+    georeferenced = result[result["bounding_box_id"].isin([0, 1, 2])]
+    assert set(georeferenced["species_id"]) == {"ABUTH", "BETVU"}
+
+
+def test_assign_spatial_preserves_row_order_with_ungeoreferenced(geo_df_with_ungeoreferenced, shapefile):
+    result = assign_spatial(geo_df_with_ungeoreferenced, str(shapefile))
+    assert list(result["bounding_box_id"]) == [0, 1, 2, 3]
+
+
+def test_assign_spatial_tags_unknown_when_no_world_columns_at_all(det_df, shapefile):
+    """A batch where remap_rows() produced zero world coordinates for any
+    row (e.g. every image lacked a grid) still resolves, tagging every row
+    UNKNOWN rather than crashing on a missing world_centroid_x column."""
+    result = assign_spatial(det_df, str(shapefile))
+
+    assert (result["species_id"] == UNKNOWN_SPECIES_ID).all()
+    assert (result["assignment_method"] == "unknown_not_georeferenced").all()
+
+
+def test_assign_spatial_ungeoreferenced_color_checker_keeps_color_checker_identity(shapefile):
+    """A color-checker detection that never got georeferenced still gets the
+    COLORCHECKER identity, not UNKNOWN -- classname is checked first."""
+    df = pd.DataFrame(
+        {
+            "image_id": ["IMG_0001"],
+            "bounding_box_id": [0],
+            "classname": ["color_checker"],
+            "conf": [0.99],
+            "xmin": [0.1],
+            "ymin": [0.1],
+            "xmax": [0.2],
+            "ymax": [0.2],
+        }
+    )
+    result = assign_spatial(df, str(shapefile))
+
+    assert result.loc[0, "species_id"] == COLOR_CHECKER_SPECIES_ID
+    assert result.loc[0, "assignment_method"] == "color_checker_class"
+
+
+@pytest.fixture
+def geo_df_with_placeholder(geo_df):
+    """geo_df plus a fourth row: a zero-detection placeholder (see jpg_to_det's
+    export_predictions), bounding_box_id=="" and no world coordinates at
+    all -- distinct from a real detection that failed to georeference."""
+    placeholder = pd.DataFrame([{
+        "image_id": "IMG_0002", "bounding_box_id": "", "classname": "",
+        "conf": "", "xmin": "", "ymin": "", "xmax": "", "ymax": "",
+    }])
+    return pd.concat([geo_df, placeholder], ignore_index=True)
+
+
+def test_assign_spatial_tags_placeholder_row_no_detections(geo_df_with_placeholder, shapefile):
+    """A zero-detection placeholder row gets NO_DETECTIONS_METHOD with no
+    species assigned -- not UNKNOWN_SPECIES_ID, which would misleadingly
+    claim an unidentified plant exists in an image with no detections."""
+    result = assign_spatial(geo_df_with_placeholder, str(shapefile))
+
+    placeholder_row = result[result["bounding_box_id"] == ""].iloc[0]
+    assert placeholder_row["assignment_method"] == NO_DETECTIONS_METHOD
+    assert pd.isna(placeholder_row["species_id"]) or placeholder_row["species_id"] in (None, "")
+
+    real = result[result["bounding_box_id"].isin([0, 1, 2])]
+    assert set(real["species_id"]) == {"ABUTH", "BETVU"}
+
+
+def test_assign_spatial_placeholder_never_reaches_spatial_join(geo_df_with_placeholder, shapefile):
+    """Placeholder rows are excluded before the join entirely -- they never
+    get a real zone's species_id even if the join would otherwise assign one."""
+    result = assign_spatial(geo_df_with_placeholder, str(shapefile))
+
+    placeholder_row = result[result["bounding_box_id"] == ""].iloc[0]
+    assert placeholder_row["assignment_method"] != "spatial_join"
+    assert placeholder_row["assignment_method"] != "nearest_polygon"
+
+
 def test_assign_spatial_within_assigns_cultivar(geo_df, cultivar_shapefile):
     """Zones with a cultc_id attribute get cultivar_id/cultivar_name alongside species_id."""
     result = assign_spatial(geo_df, str(cultivar_shapefile))
@@ -271,6 +514,41 @@ def test_assign_monoculture_no_world_columns(det_df):
     assert world_cols == [], f"unexpected world columns: {world_cols}"
 
 
+def test_assign_monoculture_excludes_color_checker(det_df):
+    """A color-checker row doesn't get the monoculture species code — it
+    gets the fixed COLORCHECKER identity instead."""
+    det_df = det_df.copy()
+    det_df.loc[1, "classname"] = "color_checker"
+
+    result = assign_monoculture(det_df, "BETVU")
+
+    plant = result.loc[0]
+    assert plant["species_id"] == "BETVU"
+    assert plant["assignment_method"] == "monoculture_config"
+
+    checker = result.loc[1]
+    assert checker["species_id"] == COLOR_CHECKER_SPECIES_ID
+    assert checker["assignment_method"] == "color_checker_class"
+
+
+def test_assign_monoculture_excludes_placeholder_row(det_df):
+    """A zero-detection placeholder row doesn't get the monoculture species
+    code either — it gets NO_DETECTIONS_METHOD with no species assigned."""
+    det_df = det_df.copy()
+    det_df["bounding_box_id"] = det_df["bounding_box_id"].astype(object)
+    det_df.loc[1, "bounding_box_id"] = ""
+
+    result = assign_monoculture(det_df, "BETVU")
+
+    plant = result.loc[0]
+    assert plant["species_id"] == "BETVU"
+    assert plant["assignment_method"] == "monoculture_config"
+
+    placeholder = result.loc[1]
+    assert placeholder["assignment_method"] == NO_DETECTIONS_METHOD
+    assert pd.isna(placeholder["species_id"]) or placeholder["species_id"] in (None, "")
+
+
 @pytest.fixture
 def catalog():
     """Minimal species_catalog.generated.json-shaped dict (see orchestrator/species_catalog.py)."""
@@ -286,6 +564,18 @@ def catalog():
                 "r": 165,
                 "g": 72,
                 "b": 47,
+            },
+            "COLORCHECKER": {
+                "common_name": "colorchecker",
+                "family": "Colorchecker",
+                "genus": "Colorchecker",
+                "growth_habit": "colorchecker",
+                "category": "colorchecker",
+                "class_id": 28,
+                "hex": "#e73b58",
+                "r": 231,
+                "g": 59,
+                "b": 88,
             },
         },
         "cultivars": {
@@ -326,6 +616,20 @@ def test_enrich_with_catalog_adds_species_columns(catalog):
     assert result.loc[0, "species_common_name"] == "peanut"
     assert result.loc[0, "species_family"] == "Fabaceae"
     assert (result.loc[0, "species_r"], result.loc[0, "species_g"], result.loc[0, "species_b"]) == (165, 72, 47)
+
+
+def test_enrich_with_catalog_populates_color_checker_identity(catalog):
+    """species_id=COLOR_CHECKER_SPECIES_ID (as set by assign_spatial/assign_monoculture
+    for color-checker rows) resolves against the catalog's own COLORCHECKER entry."""
+    dets = pd.DataFrame({
+        "species_id": [COLOR_CHECKER_SPECIES_ID],
+        "assignment_method": ["color_checker_class"],
+    })
+
+    result = enrich_with_catalog(dets, catalog)
+
+    assert result.loc[0, "species_common_name"] == "colorchecker"
+    assert (result.loc[0, "species_r"], result.loc[0, "species_g"], result.loc[0, "species_b"]) == (231, 59, 88)
 
 
 def test_enrich_with_catalog_raises_on_unmatched_species(catalog):

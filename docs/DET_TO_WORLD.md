@@ -28,7 +28,16 @@ The georeferenced CSV contains all input detection columns plus the following ap
 | `world_centroid_x` / `world_centroid_y` | Midpoint of TL and BR corners in world coordinates |
 | `crs` | Coordinate reference system of the world coordinates (e.g. `EPSG:32617`) |
 | `species_id` | Species code assigned to the detection |
-| `assignment_method` | How the species was assigned: `spatial_join`, `nearest_polygon`, or `monoculture_config` |
+| `assignment_method` | How the species was assigned: `spatial_join`, `nearest_polygon`, `monoculture_config`, `color_checker_class`, `unknown_not_georeferenced`, or `unknown_too_far` |
+
+Detections with `classname == "color_checker"` (jpg_to_det's fiducial color-reference card, class id 1 — see `stages/jpg_to_det/detector.py`) never go through the zone shapefile or monoculture species code: they're always assigned the species catalog's dedicated `COLORCHECKER` entry (`class_id` 28) directly, with `assignment_method="color_checker_class"` — see `species.COLOR_CHECKER_*` constants and `assign_spatial()`/`assign_monoculture()` in `stages/det_to_world/species.py`. This keeps a color-checker card from picking up whichever plant species zone it physically sits in, and keeps it from getting tagged `UNKNOWN`/class_id 27 (below) if it happens to land outside every zone.
+
+Real (non-color-checker) detections that can't be assigned a real species are tagged with the species catalog's dedicated "unknown plant" entry instead of being dropped or failing the batch — `species_id="PLANT"`, `class_id=27` (when the shapefile carries `class_id`), see `species.UNKNOWN_*` constants:
+
+| Case | `assignment_method` |
+|---|---|
+| No world coordinates at all — no ASFM grid for the image (`E_GRID_NOT_FOUND`), or every bbox corner missed the grid surface even after nudging (`W_SURFACE_MISS`) | `unknown_not_georeferenced` |
+| Georeferenced successfully, but the nearest zone polygon is farther than `max_nearest_distance_m` | `unknown_too_far` |
 
 Zone shapefiles carry at most one of two optional human-readable attributes (never both, in practice):
 
@@ -39,7 +48,7 @@ Zone shapefiles carry at most one of two optional human-readable attributes (nev
 
 Whether these columns appear at all is decided per batch by what's actually in the resolved `--shp` shapefile's columns (see `species.assign_spatial()`), not by any config flag — a shapefile with neither attribute produces neither column, unlike `world_*`/`crs`, which are always present (blank for monoculture) since georeferencing conceptually applies to every batch.
 
-Detections whose bounding box corners cannot be mapped to world coordinates after inward nudging are dropped and reported as warnings. For monoculture batches (`--skip-remap`), the `world_*`/`crs` columns are present but blank — the schema stays the same across every batch regardless of mode.
+Detections whose bounding box corners cannot be mapped to world coordinates after inward nudging still appear in the output CSV — reported as `W_SURFACE_MISS` warnings and written with blank `world_*`/`crs` columns, tagged `unknown_not_georeferenced` (see above) rather than dropped. The same applies to every detection on an image with no ASFM grid at all (`E_GRID_NOT_FOUND`). For monoculture batches (`--skip-remap`), the `world_*`/`crs` columns are present but blank for every row — the schema stays the same across every batch regardless of mode.
 
 
 ## Exit Codes
@@ -127,7 +136,8 @@ cli.main()
   |           |
   |           `-- _construct_global_coords()   assemble output row with all corners + centroid
   |
-  |     `-- assign_spatial()       spatial-join the successfully remapped rows against --shp
+  |     `-- assign_spatial()       spatial-join the georeferenced rows against --shp (color-checker/
+  |                                ungeoreferenced/too-far rows are tagged a fixed identity, not joined)
   |
   `-- write_georeferenced_csv()    write the (species-assigned) rows to the output CSV
 ```
@@ -143,14 +153,14 @@ Entry point. Parses arguments, validates inputs, coordinates the full run consis
 Reads the input detection CSV and validates that all required columns are present (`image_id`, `bounding_box_id`, `xmin`, `ymin`, `xmax`, `ymax`). Returns the fieldnames and rows.
 
 ### `remap_rows(rows, grid_dir)`
-Groups rows by `image_id` and processes each image. Loads the grid as `GridCache` object, calls `map_bbox` (below) for each detection, and stores each image's results and warnings.
+Groups rows by `image_id` and processes each image. Loads the grid as `GridCache` object, calls `map_bbox` (below) for each detection, and stores each image's results and warnings. Every row is carried into the returned rows regardless of outcome: a row `map_bbox` couldn't resolve (`W_SURFACE_MISS`), or every row on an image with no grid at all (`E_GRID_NOT_FOUND`), is included without `world_*`/`crs` keys rather than dropped — `species.assign_spatial()` tags these `unknown_not_georeferenced` downstream. The image itself is still recorded as failed (`ITEM_FAILED`) in the returned `ImageRemapResult` either way, for remap-status tracking.
 
 ### Species
 ### `assign_spatial(dets, shapefile)`
-Takes a DataFrame of remapped rows (must have `world_centroid_x`/`world_centroid_y`/`crs`) and a species-zone shapefile path. Builds a GeoDataFrame from the centroids, reprojects to the shapefile's CRS, and spatial-joins (`predicate="within"`) to assign each point's `species_id` from whichever zone polygon contains it. Any unmatched points (outside every zone) fall back to `sjoin_nearest()`; ties (a point exactly equidistant from two zones) are resolved by keeping the first match per point. If the shapefile has `comm_name`, it's joined in the same pass and renamed to `species_name`; if it has `cultc_id`/`disp_name` instead, those are renamed to `cultivar_id`/`cultivar_name` — a shapefile with neither produces neither column.
+Takes a DataFrame of remapped rows and a species-zone shapefile path. Rows are split off (checked in this order) before the shapefile is ever consulted: `classname == "color_checker"` rows get the fixed `COLORCHECKER` catalog identity (see the table above); rows with no `world_centroid_x` (not georeferenced — see `remap_rows()` above) get `unknown_not_georeferenced`. The remaining rows build a GeoDataFrame from the centroids, reproject to the shapefile's CRS, and spatial-join (`predicate="within"`) to assign each point's `species_id` from whichever zone polygon contains it. Any unmatched points (outside every zone) fall back to `sjoin_nearest()`; ties (a point exactly equidistant from two zones) are resolved by keeping the first match per point. Points still farther than `max_nearest_distance_m` from the nearest zone are tagged `unknown_too_far` (logged as a warning) instead of being assigned that zone's species. If the shapefile has `comm_name`, it's joined in the same pass and renamed to `species_name`; if it has `cultc_id`/`disp_name` instead, those are renamed to `cultivar_id`/`cultivar_name` — a shapefile with neither produces neither column. Excluded/tagged rows are rejoined afterward in their original row position.
 
 ### `assign_monoculture(dets, species_code)`
-Takes a DataFrame of the original (non-georeferenced) detection rows and assigns `species_code` to every row with `assignment_method="monoculture_config"` — no spatial computation.
+Takes a DataFrame of the original (non-georeferenced) detection rows and assigns `species_code` to every row with `assignment_method="monoculture_config"` — no spatial computation. `classname == "color_checker"` rows are excluded from `species_code` and get the fixed `COLORCHECKER` catalog identity instead, same as `assign_spatial()`.
 
 ### `GridCache.get(image_id)`
 Maintains a dict of `image_id → GridData` populated lazily as each image is encountered. On first access for a given image it loads the corresponding NPZ from disk; on subsequent accesses it returns the cached result. By the end of a run it holds one loaded grid per unique image that appeared in the detection CSV.
@@ -185,18 +195,31 @@ Writes the mapped rows to a CSV, preserving original input columns and appending
 |---|---|
 | `test_load_detection_rows_validates_required_columns` | Confirms that a CSV missing required columns raises a `ValueError` with a descriptive message |
 | `test_map_bbox_maps_all_corners` | Verifies that all four corners and the centroid are correctly interpolated for a simple linear grid |
-| `test_remap_rows_handles_warnings_and_missing_grids` | Checks that out-of-bounds corners produce a `W_SURFACE_MISS` warning and that images with no grid file produce an `E_GRID_NOT_FOUND` failure |
+| `test_remap_rows_handles_warnings_and_missing_grids` | Out-of-bounds corners produce a `W_SURFACE_MISS` warning and images with no grid file produce an `E_GRID_NOT_FOUND` failure — both kinds of row still end up in the returned rows, without `world_*` keys |
 | `test_map_bbox_applies_inward_nudges` | Confirms that a bbox corner falling outside the grid boundary is nudged inward and snapped to the nearest valid grid point |
 | `test_map_bbox_uses_tl_br_midpoint_for_centroid` | Confirms the centroid is the TL/BR midpoint, not the average of all four corners |
 | `test_write_georeferenced_csv_supports_header_only` | Confirms that writing an empty row list still produces a valid CSV with the correct header |
 | `test_assign_spatial_within` | Centroids inside a zone polygon receive that zone's species code and `assignment_method="spatial_join"` |
 | `test_assign_spatial_nearest_fallback` | A centroid outside all zone polygons falls back to the nearest polygon and gets `assignment_method="nearest_polygon"` |
+| `test_assign_spatial_tags_unknown_when_nearest_zone_beyond_default_threshold` | A detection ~99m from every zone polygon exceeds the 5m default and is tagged `PLANT`/`unknown_too_far` instead of failing the batch |
+| `test_assign_spatial_tags_unknown_when_nearest_zone_beyond_custom_threshold` | A custom, stricter `max_nearest_distance_m` tags a normally-in-tolerance point `unknown_too_far`; in-zone detections are unaffected |
+| `test_assign_spatial_tags_unknown_class_id_when_present` | A too-far detection gets `class_id=27` when the shapefile carries `class_id` for its zones |
 | `test_assign_spatial_no_cultivar_columns_when_shapefile_lacks_them` | Shapefiles without `cultc_id` produce no `cultivar_*` columns at all |
 | `test_assign_spatial_within_assigns_species_name` | Zones with a `comm_name` attribute get `species_name` alongside `species_id`, and no cultivar columns |
 | `test_assign_spatial_within_assigns_cultivar` | Zones with a `cultc_id` attribute get `cultivar_id`/`cultivar_name` alongside `species_id`, and no `species_name` |
 | `test_assign_spatial_nearest_fallback_assigns_cultivar` | Nearest-polygon fallback carries cultivar columns too, not just species |
+| `test_assign_spatial_color_checker_excluded_from_zone_species` | A color-checker row inside a zone polygon gets the fixed `COLORCHECKER` identity, not that zone's species/class_id |
+| `test_assign_spatial_preserves_row_order_with_color_checker` | Splitting color-checker rows out and rejoining them doesn't reshuffle the batch's row order |
+| `test_assign_spatial_color_checker_skips_zone_too_far_check` | A color-checker far outside every zone keeps its `COLORCHECKER` identity rather than getting tagged `unknown_too_far` (a plant at the same distance does) |
+| `test_assign_spatial_all_color_checkers` | A batch that's entirely color-checker rows resolves without touching the shapefile's zones |
+| `test_assign_spatial_tags_unknown_for_ungeoreferenced_rows` | A row with no world coordinates is tagged `PLANT`/`unknown_not_georeferenced`; georeferenced rows in the same batch are unaffected |
+| `test_assign_spatial_preserves_row_order_with_ungeoreferenced` | Splitting ungeoreferenced rows out and rejoining them doesn't reshuffle the batch's row order |
+| `test_assign_spatial_tags_unknown_when_no_world_columns_at_all` | A batch with zero georeferenced rows (e.g. every image lacked a grid) tags every row `unknown_not_georeferenced` rather than crashing on a missing `world_centroid_x` column |
+| `test_assign_spatial_ungeoreferenced_color_checker_keeps_color_checker_identity` | A color-checker with no world coordinates still gets `COLORCHECKER`, not `PLANT` — classname is checked before georeferencing status |
 | `test_assign_monoculture_sets_species_and_method` | All rows receive the given species code and `assignment_method="monoculture_config"` |
 | `test_assign_monoculture_no_world_columns` | Monoculture output contains no `world_*` columns |
+| `test_assign_monoculture_excludes_color_checker` | A color-checker row doesn't get the monoculture species code — it gets the fixed `COLORCHECKER` identity instead |
+| `test_enrich_with_catalog_populates_color_checker_identity` | `species_id=COLORCHECKER` (as set by `assign_spatial`/`assign_monoculture`) resolves against the catalog's own `COLORCHECKER` entry |
 
 
 ## Orchestration
