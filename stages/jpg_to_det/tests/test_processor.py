@@ -177,6 +177,26 @@ class TestProcessImage:
         assert result.n_detections == 2
         assert len(result.detection_rows) == 2
 
+    def test_zero_detections_placeholder_row_not_counted(self, config_file, fake_jpg, tmp_path):
+        # export_predictions' zero-detection placeholder row keeps the image
+        # represented in detection_rows, but n_detections must still report
+        # zero real detections, not one.
+        proc = _make_processor(config_file, tmp_path)
+        out_dir = tmp_path / "out"
+
+        with patch("stages.jpg_to_det.processor.run_multiscale", return_value=None), \
+             patch("stages.jpg_to_det.processor.export_predictions") as mock_export:
+            txt_path = out_dir / "test_image.txt"
+            rows = [{"image_id": "test_image", "bounding_box_id": "", "xmin": "", "ymin": "",
+                     "xmax": "", "ymax": "", "conf": "", "class": "", "classname": ""}]
+            mock_export.return_value = (txt_path, rows)
+
+            result = proc.process_image(fake_jpg, out_dir)
+
+        assert result.status == ITEM_OK
+        assert result.n_detections == 0
+        assert len(result.detection_rows) == 1
+
     def test_missing_jpg(self, config_file, tmp_path):
         proc = _make_processor(config_file, tmp_path)
         out_dir = tmp_path / "out"

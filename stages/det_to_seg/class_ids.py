@@ -170,6 +170,9 @@ def build_class_id_index(
 
         for row_number, row in enumerate(reader, start=2):
             context = f"{csv_path.name} row {row_number}"
+            # Skip zero-detection placeholder rows.
+            if not (row.get("bounding_box_id") or "").strip():
+                continue
             image_id = _normalize_image_id(row.get("image_id"))
             bounding_box_id = _parse_bounding_box_id(
                 row.get("bounding_box_id"), context=context

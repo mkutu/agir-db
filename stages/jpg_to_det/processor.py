@@ -24,6 +24,13 @@ from stages import ITEM_OK, ITEM_FAILED
 logger = logging.getLogger(__name__)
 
 
+def _count_real_detections(detection_rows: list[dict]) -> int:
+    """len(detection_rows), excluding export_predictions' zero-detection
+    placeholder row (bounding_box_id=="") -- that row keeps the image
+    represented in the batch CSV without counting as an actual detection."""
+    return sum(1 for row in detection_rows if row.get("bounding_box_id") != "")
+
+
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
@@ -186,7 +193,7 @@ def _process_image_worker(jpg_path: str, output_dir: str) -> DetectionResult:
         status=ITEM_OK,
         txt_path=txt_path,
         detection_rows=detection_rows,
-        n_detections=len(detection_rows),
+        n_detections=_count_real_detections(detection_rows),
     )
 
 
@@ -281,7 +288,7 @@ class Processor:
             status=ITEM_OK,
             txt_path=txt_path,
             detection_rows=detection_rows,
-            n_detections=len(detection_rows),
+            n_detections=_count_real_detections(detection_rows),
         )
 
     def process_batch(

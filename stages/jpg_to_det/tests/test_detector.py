@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from stages.jpg_to_det.detector import (
+    export_predictions,
     mirror_pad_image,
     run_multiscale,
     unpad_and_clip_detections,
@@ -200,3 +201,54 @@ class TestRunMultiscaleMirrorPad:
         run_multiscale(model, im0_bgr, config, device="cpu")
 
         assert captured_shapes == [(orig_h, orig_w)]
+
+
+# ================ export_predictions ================
+
+class TestExportPredictions:
+    def test_zero_detections_writes_empty_txt_and_one_placeholder_row(self, tmp_path):
+        # Zero detections still gets one placeholder row in the batch CSV --
+        # bounding_box_id=="" marks "no detections", not a real detection
+        # with unknown geometry/species (see stages/det_to_world/species.py's
+        # placeholder_mask and stages/det_to_seg/class_ids.py's skip logic).
+        im0 = np.zeros((100, 100, 3), dtype=np.uint8)
+
+        txt_path, rows = export_predictions(
+            results_raw_xyxy_abs=None,
+            save_dir=tmp_path, filename="IMG_0001.jpg", names={0: "plant"}, im0=im0,
+        )
+
+        assert txt_path.exists()
+        assert txt_path.read_text() == ""
+        assert len(rows) == 1
+        assert rows[0]["image_id"] == "IMG_0001"
+        assert rows[0]["bounding_box_id"] == ""
+        assert rows[0]["xmin"] == ""
+        assert rows[0]["classname"] == ""
+
+    def test_empty_tensor_treated_same_as_none(self, tmp_path):
+        im0 = np.zeros((100, 100, 3), dtype=np.uint8)
+        empty = torch.empty((0, 6))
+
+        txt_path, rows = export_predictions(
+            results_raw_xyxy_abs=empty,
+            save_dir=tmp_path, filename="IMG_0002.jpg", names={0: "plant"}, im0=im0,
+        )
+
+        assert txt_path.read_text() == ""
+        assert len(rows) == 1
+        assert rows[0]["bounding_box_id"] == ""
+
+    def test_real_detections_unaffected(self, tmp_path):
+        im0 = np.zeros((100, 100, 3), dtype=np.uint8)
+        dets = torch.tensor([[10.0, 10.0, 20.0, 20.0, 0.9, 0.0]])
+
+        txt_path, rows = export_predictions(
+            results_raw_xyxy_abs=dets,
+            save_dir=tmp_path, filename="IMG_0003.jpg", names={0: "plant"}, im0=im0,
+        )
+
+        assert len(txt_path.read_text().strip().splitlines()) == 1
+        assert len(rows) == 1
+        assert rows[0]["bounding_box_id"] == 0
+        assert rows[0]["classname"] == "plant"

@@ -29,7 +29,6 @@ from . import (
     ERROR_REMAP_FAILED,
     ERROR_SHAPEFILE_UNREADABLE,
     ERROR_SPATIAL_JOIN_FAILED,
-    ERROR_ZONE_TOO_FAR,
     ERROR_UNKNOWN_SPECIES_CODE,
 )
 from .remapper import (
@@ -41,7 +40,6 @@ from .remapper import (
 from .species import (
     DEFAULT_MAX_NEAREST_DISTANCE_M,
     UnknownSpeciesCodeError,
-    ZoneTooFarError,
     assign_monoculture,
     assign_spatial,
     enrich_with_catalog,
@@ -384,9 +382,7 @@ def main() -> int:
         except Exception as exc:
             logger.error("Spatial species assignment failed: %s", exc)
             report.set_stage_error(f"Spatial species assignment failed: {exc}")
-            if isinstance(exc, ZoneTooFarError):
-                error_code = ERROR_ZONE_TOO_FAR
-            elif "shapefile" in str(exc).lower():
+            if "shapefile" in str(exc).lower():
                 error_code = ERROR_SHAPEFILE_UNREADABLE
             else:
                 error_code = ERROR_SPATIAL_JOIN_FAILED

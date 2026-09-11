@@ -283,7 +283,19 @@ def export_predictions(
 
     if results_raw_xyxy_abs is None or results_raw_xyxy_abs.numel() == 0:
         txt_path.touch()
-        return txt_path, []
+        # Keep one placeholder row for zero detections; blank bounding_box_id
+        # marks it as "no detections" for downstream stages.
+        return txt_path, [{
+            "image_id": stem,
+            "bounding_box_id": "",
+            "xmin": "",
+            "ymin": "",
+            "xmax": "",
+            "ymax": "",
+            "conf": "",
+            "class": "",
+            "classname": "",
+        }]
 
     boxes = results_raw_xyxy_abs.detach().cpu().float()
     xyxy = boxes[:, :4]

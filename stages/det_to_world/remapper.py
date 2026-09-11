@@ -352,19 +352,38 @@ def remap_rows(
         rows_by_image.setdefault(row["image_id"], []).append(row)
 
     for image_id, image_rows in rows_by_image.items():
+        if len(image_rows) == 1 and image_rows[0].get("bounding_box_id") == "":
+            # Pass zero-detection placeholders through without grid lookup.
+            output_rows.append(dict(image_rows[0]))
+            results.append(
+                ImageRemapResult(
+                    image_id=image_id,
+                    status=ITEM_OK,
+                    n_input_rows=1,
+                    n_output_rows=1,
+                )
+            )
+            continue
+
         try:
             # check cache
             grid = cache.get(image_id)
-            
+
 
         except FileNotFoundError as exc:
-            # cache miss
+            # cache miss -- no grid means none of this image's detections can
+            # be georeferenced, but they're still real detections. Carry them
+            # into the output without world coordinates (species.assign_spatial
+            # tags them UNKNOWN, or COLORCHECKER if that's what they are)
+            # rather than dropping them from the CSV entirely; the image
+            # itself is still recorded as failed below for remap tracking.
+            output_rows.extend(dict(row) for row in image_rows)
             results.append(
                 ImageRemapResult(
                     image_id=image_id,
                     status=ITEM_FAILED,
                     n_input_rows=len(image_rows),
-                    n_output_rows=0,
+                    n_output_rows=len(image_rows),
                     error_code=ERROR_GRID_NOT_FOUND,
                     error_type=type(exc).__name__,
                     error_message=str(exc),
@@ -413,6 +432,9 @@ def remap_rows(
             if warning is not None:
                 logger.warning(warning.message)
                 warnings.append(warning)
+                # Preserve unresolved detections without world coordinates.
+                output_rows.append(dict(row))
+                n_output_rows += 1
                 continue
 
             output_rows.append(mapped_row)

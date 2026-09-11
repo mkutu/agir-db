@@ -170,21 +170,59 @@ def test_map_bbox_maps_all_corners(grid_dir):
 def test_remap_rows_handles_warnings_and_missing_grids(detection_csv, grid_dir):
     # IMG_0001: one detection maps successfully, one is out-of-bounds and becomes a warning.
     # IMG_0002: no grid file exists, so the whole image fails with E_GRID_NOT_FOUND.
-
+    # All three detections still end up in mapped_rows -- the warned and
+    # missing-grid ones just carry no world coordinates, rather than being
+    # dropped from the output entirely (species.assign_spatial tags them
+    # UNKNOWN downstream).
 
     _, rows = load_detection_rows(detection_csv)
 
     mapped_rows, results = remap_rows(rows, grid_dir)
 
-    assert len(mapped_rows) == 1
+    assert len(mapped_rows) == 3
+
+    mapped_by_bbox = {(row["image_id"], row["bounding_box_id"]): row for row in mapped_rows}
+
+    georeferenced = mapped_by_bbox[("IMG_0001", "0")]
+    assert "world_centroid_x" in georeferenced
+
+    surface_miss = mapped_by_bbox[("IMG_0001", "1")]
+    assert "world_centroid_x" not in surface_miss
+
+    no_grid = mapped_by_bbox[("IMG_0002", "0")]
+    assert "world_centroid_x" not in no_grid
+
     assert results[0].image_id == "IMG_0001"
     assert results[0].status == ITEM_OK
-    assert results[0].n_output_rows == 1
+    assert results[0].n_output_rows == 2
     assert len(results[0].warnings) == 1
 
     assert results[1].image_id == "IMG_0002"
     assert results[1].status == ITEM_FAILED
     assert results[1].error_code == ERROR_GRID_NOT_FOUND
+    assert results[1].n_output_rows == 1
+
+
+def test_remap_rows_passes_placeholder_row_through_without_grid_lookup(grid_dir):
+    # IMG_0002's zero-detection placeholder row (bounding_box_id=="", see
+    # jpg_to_det's export_predictions) has no grid file at all -- must not
+    # be treated as an ERROR_GRID_NOT_FOUND failure, since there's no real
+    # detection here to fail to remap.
+    rows = [{
+        "image_id": "IMG_0002", "bounding_box_id": "", "xmin": "", "ymin": "",
+        "xmax": "", "ymax": "", "conf": "", "class": "", "classname": "",
+    }]
+
+    mapped_rows, results = remap_rows(rows, grid_dir)
+
+    assert len(mapped_rows) == 1
+    assert mapped_rows[0]["bounding_box_id"] == ""
+    assert "world_centroid_x" not in mapped_rows[0]
+
+    assert len(results) == 1
+    assert results[0].image_id == "IMG_0002"
+    assert results[0].status == ITEM_OK
+    assert results[0].n_output_rows == 1
 
 
 def test_map_bbox_applies_inward_nudges(nudge_grid_dir):
